@@ -3,15 +3,30 @@
 #include <string>
 #include <cctype>
 #include <map>
+#include <fstream>
+#include <sstream>
 
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Verifier.h"
+#include "llvm/IR/LegacyPassManager.h"
+#include "llvm/Transforms/InstCombine/InstCombine.h"
+#include "llvm/Transforms/Scalar.h"
+#include "llvm/Transforms/Scalar/GVN.h"
 #include "llvm/ExecutionEngine/Orc/LLJIT.h"
 
 using namespace llvm;
 using namespace llvm::orc;
+
+// ----- CLI Configuration -----
+struct Config {
+    std::string input;
+    std::string inputFile;
+    bool emitLLVM = false;
+    int optLevel = 0; // 0, 1, 2, 3
+    bool interactive = true;
+};
 
 // ----- Lexer -----
 enum Token {
@@ -130,22 +145,47 @@ std::unique_ptr<ExprAST> parseBinOpRHS(int exprPrec, std::unique_ptr<ExprAST> LH
     }
 }
 
+// ----- Optimization -----
+void optimizeModule(Module* M, int optLevel) {
+    if (optLevel == 0) return;
+
+    legacy::FunctionPassManager FPM(M);
+
+    if (optLevel >= 1) {
+        FPM.add(createInstructionCombiningPass());
+        FPM.add(createReassociatePass());
+    }
+    if (optLevel >= 2) {
+        FPM.add(createGVNPass());
+        FPM.add(createCFGSimplificationPass());
+    }
+    if (optLevel >= 3) {
+        FPM.add(createDeadCodeEliminationPass());
+    }
+
+    FPM.doInitialization();
+    for (auto &F : *M)
+        FPM.run(F);
+}
+
 // ----- Code generation -----
-int main() {
-    std::cout << "Enter expression: ";
-    std::getline(std::cin, Input);
+int processExpression(const std::string& expr, const Config& config) {
+    Input = expr;
     Index = 0;
     getNext();
 
     auto AST = parseExpression();
-    if (!AST) return 1;
+    if (!AST) {
+        std::cerr << "Failed to parse expression\n";
+        return 1;
+    }
 
     LLVMContext Context;
     IRBuilder<> Builder(Context);
     auto ModulePtr = std::make_unique<Module>("calc", Context);
 
     FunctionType *FT = FunctionType::get(Type::getDoubleTy(Context), false);
-    Function *F = Function::Create(FT, Function::ExternalLinkage, "main", ModulePtr.get());
+    Function *F = Function::Create(FT, Function::ExternalLinkage, "calc_expr", ModulePtr.get());
     BasicBlock *BB = BasicBlock::Create(Context, "entry", F);
     Builder.SetInsertPoint(BB);
 
@@ -153,8 +193,94 @@ int main() {
     Builder.CreateRet(RetVal);
 
     verifyFunction(*F);
-    ModulePtr->print(llvm::errs(), nullptr);
+
+    // Apply optimizations
+    optimizeModule(ModulePtr.get(), config.optLevel);
+
+    if (config.emitLLVM) {
+        std::cout << "\n=== LLVM IR ===\n";
+        ModulePtr->print(llvm::outs(), nullptr);
+        std::cout << "===============\n\n";
+    }
 
     return 0;
 }
 
+void printUsage(const char* progName) {
+    std::cout << "Usage: " << progName << " [options]\n"
+              << "Options:\n"
+              << "  -f <file>       Read expression from file\n"
+              << "  -e <expr>       Evaluate expression from command line\n"
+              << "  -emit-llvm      Emit LLVM IR to stdout\n"
+              << "  -O<level>       Set optimization level (0-3, default: 0)\n"
+              << "  -h, --help      Show this help message\n"
+              << "\nIf no options are provided, runs in interactive mode.\n";
+}
+
+Config parseArgs(int argc, char* argv[]) {
+    Config config;
+    
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        
+        if (arg == "-h" || arg == "--help") {
+            printUsage(argv[0]);
+            exit(0);
+        } else if (arg == "-f") {
+            if (i + 1 >= argc) {
+                std::cerr << "Error: -f requires a filename\n";
+                exit(1);
+            }
+            config.inputFile = argv[++i];
+            config.interactive = false;
+        } else if (arg == "-e") {
+            if (i + 1 >= argc) {
+                std::cerr << "Error: -e requires an expression\n";
+                exit(1);
+            }
+            config.input = argv[++i];
+            config.interactive = false;
+        } else if (arg == "-emit-llvm") {
+            config.emitLLVM = true;
+        } else if (arg.substr(0, 2) == "-O") {
+            if (arg.length() > 2) {
+                config.optLevel = arg[2] - '0';
+                if (config.optLevel < 0 || config.optLevel > 3) {
+                    std::cerr << "Error: Invalid optimization level. Use 0-3.\n";
+                    exit(1);
+                }
+            } else {
+                std::cerr << "Error: -O requires a level (0-3)\n";
+                exit(1);
+            }
+        } else {
+            std::cerr << "Error: Unknown option '" << arg << "'\n";
+            printUsage(argv[0]);
+            exit(1);
+        }
+    }
+    
+    return config;
+}
+
+int main(int argc, char* argv[]) {
+    Config config = parseArgs(argc, argv);
+
+    if (config.interactive) {
+        std::cout << "Enter expression: ";
+        std::getline(std::cin, config.input);
+        return processExpression(config.input, config);
+    } else if (!config.inputFile.empty()) {
+        std::ifstream file(config.inputFile);
+        if (!file) {
+            std::cerr << "Error: Cannot open file '" << config.inputFile << "'\n";
+            return 1;
+        }
+        std::stringstream buffer;
+        buffer << file.rdbuf();
+        config.input = buffer.str();
+        return processExpression(config.input, config);
+    } else {
+        return processExpression(config.input, config);
+    }
+}
