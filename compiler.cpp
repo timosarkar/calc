@@ -229,7 +229,7 @@ void printUsage(const char* progName) {
               << "Options:\n"
               << "  -f <file>       Read expression from file\n"
               << "  -e <expr>       Evaluate expression from command line\n"
-              << "  -emit-llvm      Emit LLVM IR to stdout\n"
+              << "  -emit-ir      Emit LLVM IR to stdout\n"
               << "  -O<level>       Set optimization level (0-3, default: 0)\n"
               << "  -h, --help      Show this help message\n"
               << "\nIf no options are provided, runs in interactive mode.\n";
@@ -258,7 +258,7 @@ Config parseArgs(int argc, char* argv[]) {
             }
             config.input = argv[++i];
             config.interactive = false;
-        } else if (arg == "-emit-llvm") {
+        } else if (arg == "-emit-ir") {
             config.emitLLVM = true;
         } else if (arg.substr(0, 2) == "-O") {
             if (arg.length() > 2) {
