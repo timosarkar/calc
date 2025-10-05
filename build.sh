@@ -1,3 +1,3 @@
-llc -filetype=obj main.ll -o main.o
-clang -c capstone.c -I/opt/homebrew/include -o capstone.o
-clang main.o capstone.o -L/opt/homebrew/lib -lcapstone -o test_capstone
+clang++ a.cpp -std=c++20 -g \                ~/projects/a
+  `llvm-config --cxxflags --ldflags --system-libs --libs all` \
+  -o calculator
