@@ -15,9 +15,13 @@
 #include "llvm/Transforms/Scalar.h"
 #include "llvm/Transforms/Scalar/GVN.h"
 #include "llvm/ExecutionEngine/Orc/LLJIT.h"
+#include "llvm/Support/Error.h"
+#include "llvm/Support/TargetSelect.h"
 
 using namespace llvm;
 using namespace llvm::orc;
+
+static ExitOnError ExitOnErr;
 
 // ----- CLI Configuration -----
 struct Config {
@@ -203,6 +207,20 @@ int processExpression(const std::string& expr, const Config& config) {
         std::cout << "===============\n\n";
     }
 
+    // Execute with JIT
+    InitializeNativeTarget();
+    InitializeNativeTargetAsmPrinter();
+    InitializeNativeTargetAsmParser();
+    
+    auto JIT = ExitOnErr(LLJITBuilder().create());
+    ExitOnErr(JIT->addIRModule(ThreadSafeModule(std::move(ModulePtr), std::make_unique<LLVMContext>())));
+    
+    auto ResultAddr = ExitOnErr(JIT->lookup("calc_expr"));
+    double (*FP)() = ResultAddr.toPtr<double(*)()>();
+    double result = FP();
+    
+    std::cout << "Result: " << result << "\n";
+
     return 0;
 }
 
@@ -264,6 +282,9 @@ Config parseArgs(int argc, char* argv[]) {
 }
 
 int main(int argc, char* argv[]) {
+    InitializeNativeTarget();
+    InitializeNativeTargetAsmPrinter();
+    
     Config config = parseArgs(argc, argv);
 
     if (config.interactive) {
